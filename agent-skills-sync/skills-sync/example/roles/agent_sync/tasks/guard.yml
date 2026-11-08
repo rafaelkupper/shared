@@ -1,0 +1,55 @@
+- name: Read the previous manifest
+  ansible.builtin.slurp:
+    src: "{{ agent_sync_state_dir }}/manifest.json"
+  register: agent_sync_manifest_raw
+  failed_when: false
+
+- ansible.builtin.set_fact:
+    agent_sync_manifest: "{{ (agent_sync_manifest_raw.content | b64decode | from_json) if agent_sync_manifest_raw.content is defined else {'rules': {}, 'skills': {}} }}"
+
+- name: Hash current rules files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop: "{{ agent_sync_rule_files }}"
+  register: agent_sync_cur_rules
+
+- name: Hash current local skill copies
+  ansible.builtin.shell: |
+    d="{{ agent_sync_state_dir }}/skills/{{ item.name }}"
+    if [ -d "$d" ]; then "{{ agent_sync_hash }}" "$d"; else echo missing; fi
+  loop: "{{ agent_sync_skills }}"
+  register: agent_sync_cur_skill
+  changed_when: false
+  check_mode: false
+
+# A file is drifted when it exists and differs from what we last deployed.
+# With no manifest entry, any existing file that differs from the new content counts,
+# unless agent_sync_adopt_existing is true.
+- name: Find drifted files
+  ansible.builtin.set_fact:
+    agent_sync_drift: >-
+      {%- set out = [] -%}
+      {%- set want = agent_sync_rules | hash('sha256') -%}
+      {%- for r in agent_sync_cur_rules.results if r.stat.exists -%}
+        {%- set last = agent_sync_manifest.rules.get(r.item) -%}
+        {%- if (last and r.stat.checksum != last) or (not last and r.stat.checksum != want and not agent_sync_adopt_existing) -%}
+          {%- set _ = out.append(r.item) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- for s in agent_sync_cur_skill.results if s.stdout != 'missing' -%}
+        {%- set last = agent_sync_manifest.skills.get(s.item.name) -%}
+        {%- if (last and s.stdout != last) or (not last and s.stdout != s.item.sha256 and not agent_sync_adopt_existing) -%}
+          {%- set _ = out.append(agent_sync_state_dir + '/skills/' + s.item.name) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Stop if anything changed outside the repo
+  ansible.builtin.fail:
+    msg: |
+      These managed files on {{ inventory_hostname }} differ from the last deploy (or existed before the first one):
+      {{ agent_sync_drift | join('\n') }}
+      Move the change into the source repo or discard it, then run again.
+      First deploy over hand-written files: back them up, then run with -e agent_sync_adopt_existing=true.
+  when: agent_sync_drift | length > 0

@@ -1,0 +1,26 @@
+# Machine role picks rules/roles/<role>.md. Set per group or host in the inventory.
+agent_sync_role: workstation
+
+# Where the repo checkout lives on the controller (the machine running Ansible).
+agent_sync_source: "{{ playbook_dir }}"
+
+# Where each machine keeps its local copy of skills and the deploy manifest.
+agent_sync_state_dir: "{{ ansible_facts.env.HOME }}/.local/share/agent-sync"
+
+# One entry per Codex home. Extra homes are for extra accounts (CODEX_HOME=...).
+agent_sync_codex_homes:
+  - "{{ ansible_facts.env.HOME }}/.codex"
+
+# One entry per Claude config dir. Extra dirs are for extra accounts (CLAUDE_CONFIG_DIR=...).
+agent_sync_claude_dirs:
+  - "{{ ansible_facts.env.HOME }}/.claude"
+
+# Shared skills root read by Codex, OpenCode, Grok and Muse Code.
+agent_sync_agents_skills_dir: "{{ ansible_facts.env.HOME }}/.agents/skills"
+
+# OpenCode global rules file.
+agent_sync_opencode_rules: "{{ ansible_facts.env.HOME }}/.config/opencode/AGENTS.md"
+
+# First run on a machine that already has hand-written files: set to true once,
+# after you have backed them up, to let the deploy take them over.
+agent_sync_adopt_existing: false
