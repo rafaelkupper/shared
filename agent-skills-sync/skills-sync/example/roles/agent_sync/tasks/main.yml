@@ -1,0 +1,99 @@
+- name: Load the reviewed skills snapshot
+  ansible.builtin.set_fact:
+    agent_sync_skills: "{{ (lookup('file', agent_sync_source + '/skills.lock') | from_yaml).skills }}"
+    agent_sync_rules: "{{ lookup('template', 'rules.md.j2') }}"
+    agent_sync_rule_files: >-
+      {{ (agent_sync_codex_homes | map('regex_replace', '$', '/AGENTS.md') | list)
+         + [agent_sync_opencode_rules]
+         + (agent_sync_claude_dirs | map('regex_replace', '$', '/CLAUDE.md') | list) }}
+    agent_sync_skill_roots: "{{ [agent_sync_agents_skills_dir] + (agent_sync_claude_dirs | map('regex_replace', '$', '/skills') | list) }}"
+    agent_sync_hash: "{{ agent_sync_state_dir }}/tree-hash.sh"
+
+- name: Hash the controller's skills folder
+  ansible.builtin.command: "{{ agent_sync_source }}/scripts/tree-hash.sh {{ agent_sync_source }}/skills/{{ item.name }}"
+  loop: "{{ agent_sync_skills }}"
+  register: agent_sync_src_hash
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Stop if skills/ no longer matches the reviewed snapshot
+  ansible.builtin.assert:
+    that: item.stdout == item.item.sha256
+    fail_msg: "skills/{{ item.item.name }} changed after the last snapshot. Review it, run scripts/snapshot.sh, commit, then deploy."
+    quiet: true
+  loop: "{{ agent_sync_src_hash.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  run_once: true
+
+- name: Install the tree-hash helper on the machine
+  block:
+    - ansible.builtin.file:
+        path: "{{ agent_sync_state_dir }}"
+        state: directory
+        mode: "0700"
+    - ansible.builtin.copy:
+        src: "{{ agent_sync_source }}/scripts/tree-hash.sh"
+        dest: "{{ agent_sync_hash }}"
+        mode: "0755"
+
+- name: Guard against unreviewed local changes
+  ansible.builtin.import_tasks: guard.yml
+
+- name: Create rules folders
+  ansible.builtin.file:
+    path: "{{ item | dirname }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ agent_sync_rule_files }}"
+
+- name: Write rules files
+  ansible.builtin.copy:
+    content: "{{ agent_sync_rules }}"
+    dest: "{{ item }}"
+    mode: "0644"
+  loop: "{{ agent_sync_rule_files }}"
+
+- name: Replace changed local skill copies
+  ansible.builtin.file:
+    path: "{{ agent_sync_state_dir }}/skills/{{ item.item.name }}"
+    state: absent
+  loop: "{{ agent_sync_cur_skill.results }}"
+  when: item.stdout != item.item.sha256
+
+- name: Copy skills from the snapshot
+  ansible.builtin.copy:
+    src: "{{ agent_sync_source }}/skills/{{ item.item.name }}/"
+    dest: "{{ agent_sync_state_dir }}/skills/{{ item.item.name }}/"
+    mode: preserve
+  loop: "{{ agent_sync_cur_skill.results }}"
+  when: item.stdout != item.item.sha256
+
+- name: Create skills roots
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ agent_sync_skill_roots }}"
+
+# force is off on purpose: if a real folder with the same name exists, this fails
+# instead of replacing someone's hand-made skill.
+- name: Link each skill into every skills root
+  ansible.builtin.file:
+    src: "{{ agent_sync_state_dir }}/skills/{{ item.1.name }}"
+    dest: "{{ item.0 }}/{{ item.1.name }}"
+    state: link
+  loop: "{{ agent_sync_skill_roots | product(agent_sync_skills) | list }}"
+
+- name: Record what was deployed
+  ansible.builtin.copy:
+    dest: "{{ agent_sync_state_dir }}/manifest.json"
+    mode: "0600"
+    content: >-
+      {{ {'rules': dict(agent_sync_rule_files | zip([agent_sync_rules | hash('sha256')] * (agent_sync_rule_files | length))),
+          'skills': dict(agent_sync_skills | map(attribute='name') | zip(agent_sync_skills | map(attribute='sha256')))} | to_nice_json }}
+
+- name: Verify contents and links
+  ansible.builtin.import_tasks: verify.yml

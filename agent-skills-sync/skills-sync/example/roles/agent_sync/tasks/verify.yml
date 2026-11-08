@@ -1,0 +1,35 @@
+- name: Re-hash rules files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop: "{{ agent_sync_rule_files }}"
+  register: agent_sync_v_rules
+  failed_when: >-
+    not agent_sync_v_rules.stat.exists or
+    agent_sync_v_rules.stat.checksum != (agent_sync_rules | hash('sha256'))
+
+- name: Re-hash skill copies against skills.lock
+  ansible.builtin.command: "{{ agent_sync_hash }} {{ agent_sync_state_dir }}/skills/{{ item.name }}"
+  loop: "{{ agent_sync_skills }}"
+  register: agent_sync_v_skill
+  changed_when: false
+  check_mode: false
+  failed_when: agent_sync_v_skill.stdout != item.sha256
+
+- name: Check every link points at the local copy
+  ansible.builtin.stat:
+    path: "{{ item.0 }}/{{ item.1.name }}"
+    follow: false
+  loop: "{{ agent_sync_skill_roots | product(agent_sync_skills) | list }}"
+  register: agent_sync_v_link
+  failed_when: >-
+    not agent_sync_v_link.stat.islnk | default(false) or
+    agent_sync_v_link.stat.lnk_source != agent_sync_state_dir + '/skills/' + item.1.name
+
+- name: Check every linked skill has a readable SKILL.md
+  ansible.builtin.stat:
+    path: "{{ item.0 }}/{{ item.1.name }}/SKILL.md"
+    follow: true
+  loop: "{{ agent_sync_skill_roots | product(agent_sync_skills) | list }}"
+  register: agent_sync_v_md
+  failed_when: not agent_sync_v_md.stat.exists or not agent_sync_v_md.stat.readable

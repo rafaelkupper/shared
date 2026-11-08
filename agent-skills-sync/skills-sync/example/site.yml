@@ -1,0 +1,5 @@
+- name: Sync agent rules and skills
+  hosts: all
+  gather_facts: true
+  roles:
+    - agent_sync
